@@ -35,16 +35,31 @@ class MockClient:
         )
 
 
+def read_max_output_tokens() -> int:
+    value = os.getenv("MAX_OUTPUT_TOKENS", "").strip()
+    if not value:
+        return 128
+    try:
+        limit = int(value)
+    except ValueError:
+        raise ValueError("MAX_OUTPUT_TOKENS는 양의 정수여야 합니다.") from None
+    if limit <= 0:
+        raise ValueError("MAX_OUTPUT_TOKENS는 양의 정수여야 합니다.")
+    return limit
+
+
 class OpenAIClient:
     def __init__(self, api_key: str, model: str):
         if not api_key:
             raise ValueError("OPENAI_API_KEY를 설정해야 합니다.")
         if not model:
             raise ValueError("OPENAI_MODEL을 설정해야 합니다.")
+        max_output_tokens = read_max_output_tokens()
         try:
             from openai import OpenAI
         except ImportError as exc:
             raise RuntimeError("Live 모드에는 pip install -r requirements.txt가 필요합니다.") from exc
+        self.max_output_tokens = max_output_tokens
         self.client = OpenAI(api_key=api_key, timeout=30.0, max_retries=0)
         self.model = model
 
@@ -55,7 +70,7 @@ class OpenAIClient:
         response = self.client.responses.create(
             model=self.model,
             input=question,
-            max_output_tokens=128,
+            max_output_tokens=self.max_output_tokens,
         )
         usage = getattr(response, "usage", None)
         detail = getattr(usage, "input_tokens_details", None) if usage is not None else None
@@ -83,7 +98,7 @@ class GeminiClient:
         except ImportError as exc:
             raise RuntimeError("Live 모드에는 pip install -r requirements.txt가 필요합니다.") from exc
         self.client = genai.Client(api_key=api_key)
-        self.config = types.GenerateContentConfig(max_output_tokens=128)
+        self.config = types.GenerateContentConfig(max_output_tokens=read_max_output_tokens())
         self.model = model
 
     def ask(self, question: str) -> Reply:
@@ -155,7 +170,10 @@ def load_local_env() -> None:
             continue
         key, value = line.split("=", 1)
         key = key.strip()
-        if key in {"OPENAI_API_KEY", "OPENAI_MODEL", "OPENAI_EMBEDDING_MODEL", "GEMINI_API_KEY", "GEMINI_MODEL_NAME"}:
+        if key in {
+            "OPENAI_API_KEY", "OPENAI_MODEL", "OPENAI_EMBEDDING_MODEL",
+            "GEMINI_API_KEY", "GEMINI_MODEL", "MAX_OUTPUT_TOKENS",
+        }:
             os.environ.setdefault(key, value.strip().strip('"').strip("'"))
 
 
@@ -165,12 +183,15 @@ def run(question: str, client: ChatClient) -> Reply:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="My AI Assistant — OpenAI runtime foundation")
-    parser.add_argument("question", nargs="?", default="이번 과정에서 무엇을 만들까요?")
+    parser.add_argument("question", nargs="?", default="")
     parser.add_argument("--mode", choices=["mock", "live"], default="mock")
     parser.add_argument("--provider", choices=["openai", "gemini"], default="openai")
     parser.add_argument("--fallback", choices=["none", "openai", "gemini"], default="none",
                         help="1순위 호출이 API 오류로 실패하면 사용할 2순위 provider")
     args = parser.parse_args(argv)
+    if not args.question.strip():
+        print("ERROR: 질문을 입력해야 합니다.", file=sys.stderr)
+        return 2
     try:
         if args.mode == "live":
             load_local_env()
